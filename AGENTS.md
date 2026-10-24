@@ -2,7 +2,7 @@
 
 Guidance for AI coding agents (and humans) working in this repository. It records the architectural decisions made so far for a **browser-based, full-3D virtual tabletop (VTT)**, along with the reasoning behind them, so later work stays consistent with them.
 
-> Status: **pre-implementation.** The decisions below are settled; anything under "Open questions" is not. Don't treat open items as decided. Ask, or propose options.
+> Status: **early prototype.** Tokens can be added, dragged, and removed, and dice rolled, all synced through the event log. The decisions below are settled; anything under "Open questions" is not. Don't treat open items as decided. Ask, or propose options.
 
 ---
 
@@ -107,14 +107,44 @@ Summary: **polling scales more simply; SSE scales more efficiently.** At hundred
 
 ---
 
-## 5. Open questions (NOT yet decided)
+## 5. Decision: Tooling and repo layout
 
-- Language and tooling: TypeScript vs. JavaScript, bundler (e.g., Vite), test framework.
-- Server runtime and hosting (Node, Go, serverless, containers/Kubernetes, etc.).
-- Datastore for the event log, and the cache for latest sequence numbers.
-- Event schema and versioning; whether to take periodic **snapshots** so long sessions don't require full replay.
-- Authentication, session/room creation, and roles (GM vs. player permissions, hidden information).
+**Chosen:** TypeScript everywhere, npm workspaces, Vite (client), Vitest (tests), Node 24 + [Hono](https://hono.dev/) (server), SQLite via Node's built-in `node:sqlite` (prototype event store), and a plain HTML overlay for non-3D UI.
+
+- **TypeScript:** the event schema is shared by client and server, so type errors appear at compile time instead of as replay bugs.
+- **Hono:** small, standards-based (`fetch`-style handlers), and portable to serverless or edge hosting later.
+- **`node:sqlite`:** no native build step and no setup. The event log needs only an indexed `(session_id, seq)` lookup. Move to Postgres when we need more than one server instance.
+- **HTML overlay:** accessible, cheap on mobile, and keeps the canvas purely 3D.
+
+### Layout
+| Folder | Layer | Contents |
+|---|---|---|
+| `shared/` | State | Event/action types (`events.ts`), the pure reducer (`state.ts`), and action validation (`validate.ts`). No DOM, Three.js, or I/O. |
+| `server/` | Server | `store.ts` (SQLite event log, seq assignment), `app.ts` (HTTP routes), `index.ts` (entry point). |
+| `client/src/transport/` | Transport | `api.ts` (fetch calls) and `poller.ts` (adaptive polling with ETags). |
+| `client/src/render/` | Rendering | All Three.js code. Nothing else imports `three`. |
+| `client/src/ui/` | UI | HTML overlay. Reads state, sends actions. |
+
+### Conventions
+- **Actions vs. events:** clients send an `Action` (an intent). The server validates it with `validateAction`, which returns an `EventData` (a fact), then adds `seq`, `v` (schema version), `actor`, and `at`. Anything the server must decide (ids, dice results) is created during validation, through the injected `ServerContext`.
+- **Adding a new kind of change:** add an `Action` variant and an `EventData` variant in `shared/src/events.ts`, handle it in `validateAction` and `applyEvent`, and add tests. `applyEvent` must stay pure and deterministic.
+- **Drag preview:** while a drag is in flight, the renderer shows the token at its *pending* position, but table state only changes when the event comes back from the log.
+- **API:** `POST /api/sessions` → `{id}`; `POST /api/sessions/:id/actions` `{actor, action}` → `{ok, seq}` or `{ok: false, error}`; `GET /api/sessions/:id/events?after=N` → `{events, latestSeq}`, with `ETag` = latest seq (sends 304 when unchanged).
+- **Single-instance caches:** the server's in-memory latest-seq and state caches are correct only while one instance runs. They stand in for Redis.
+- **Starting poll values** are in `client/src/transport/poller.ts` (`POLL`): 1 s after activity, backing off ×1.5 to 5 s, and 30 s when the tab is hidden. Tune these against real metrics.
+
+### Commands
+- `npm run dev`: server on :8787 and client on :5173 (Vite proxies `/api`, and listens on the LAN for phone testing).
+- `npm test` · `npm run typecheck` · `npm run build`
+- `?webgl` in the URL forces the WebGL2 fallback.
+
+---
+
+## 6. Open questions (NOT yet decided)
+
+- Hosting (serverless, containers, etc.), the production datastore (likely Postgres), and the latest-seq cache (likely Redis).
+- Whether to take periodic **snapshots** so long sessions don't require full replay, and how to migrate events when `v` changes.
+- Authentication, session/room creation, and roles (GM vs. player permissions, hidden information). Today anyone with the link can do anything, and `actor` is self-reported.
 - Asset pipeline: where models and textures are stored and how they're served (CDN), and whether players can upload their own.
-- UI approach for non-3D interface elements (HTML overlay vs. in-canvas).
-- Starting poll interval values and backoff curve.
+- Bundle size: `three/webgpu` is about 220 KB gzipped. Consider code-splitting, or a WebGL-only build for low-end devices.
 - Rule system support: system-agnostic vs. specific game systems.

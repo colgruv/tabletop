@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Tabletop</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="view" aria-label="3D table. Drag tokens to move them; drag empty space to orbit the camera."></canvas>
+      <div id="labels" aria-hidden="true"></div>
+
+      <header class="bar">
+        <strong class="brand">Tabletop</strong>
+        <span id="status" data-status="ok">Connecting…</span>
+        <span id="backend" class="muted" title="Rendering backend"></span>
+        <button id="copy-link" type="button">Copy invite link</button>
+      </header>
+
+      <aside class="panel">
+        <form id="add-form" class="row">
+          <input id="token-name" placeholder="Token name" maxlength="32" aria-label="Token name" />
+          <input id="token-color" type="color" aria-label="Token color" />
+          <button type="submit">Add</button>
+        </form>
+
+        <div id="selection" class="row" hidden>
+          <span>Selected: <b id="selected-name"></b></span>
+          <button id="remove-token" type="button" class="danger">Remove</button>
+        </div>
+
+        <form id="dice-form" class="row">
+          <input id="dice-formula" value="1d20" maxlength="12" aria-label="Dice formula, e.g. 2d6+1" />
+          <button type="submit">Roll</button>
+        </form>
+
+        <p id="error" role="alert" hidden></p>
+
+        <h2>Rolls</h2>
+        <p id="roll-empty" class="muted">No rolls yet.</p>
+        <ol id="roll-log" aria-live="polite"></ol>
+      </aside>
+
+      <p id="fatal" role="alert" hidden></p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "@tabletop/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.5",
+    "@tabletop/shared": "*",
+    "hono": "4.13.13"
+  },
+  "devDependencies": {
+    "tsx": "4.23.15"
+  }
+}
