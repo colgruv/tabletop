@@ -1,7 +1,10 @@
 import { randomBytes, randomInt } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { cors } from "hono/cors";
+import type { Context } from "hono";
 import type { EventsResponse, PostActionRequest, PostActionResponse, ServerContext } from "@tabletop/shared";
+import { rateLimit } from "./rateLimit";
 import type { EventStore } from "./store";
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{8,32}$/;
@@ -13,12 +16,42 @@ export const defaultContext: ServerContext = {
   rollDie: (sides) => randomInt(1, sides + 1),
 };
 
-export function createApp(store: EventStore, ctx: ServerContext = defaultContext) {
+export interface AppOptions {
+  ctx?: ServerContext;
+  /** Browser origins allowed to call the API cross-origin (e.g. the GitHub Pages site). */
+  allowedOrigins?: string[];
+  /** Identify the caller for rate limiting. */
+  clientIp?: (c: Context) => string;
+}
+
+/** Behind CloudFront, the real viewer IP is the last X-Forwarded-For entry. */
+export const forwardedIp = (c: Context): string =>
+  c.req.header("X-Forwarded-For")?.split(",").at(-1)?.trim() || "unknown";
+
+export function createApp(store: EventStore, opts: AppOptions = {}) {
+  const ctx = opts.ctx ?? defaultContext;
+  const key = opts.clientIp ?? forwardedIp;
   const app = new Hono().basePath("/api");
+
+  if (opts.allowedOrigins?.length) {
+    app.use(
+      "*",
+      cors({
+        origin: opts.allowedOrigins,
+        allowMethods: ["GET", "POST"],
+        allowHeaders: ["Content-Type", "If-None-Match"],
+        exposeHeaders: ["ETag"],
+        maxAge: 7200, // cache preflights so polls don't double up
+      }),
+    );
+  }
+
+  // Generous enough for several tabs polling; stops scripted floods.
+  app.use("*", rateLimit({ capacity: 30, refillPerSec: 15, key }));
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  app.post("/sessions", (c) => {
+  app.post("/sessions", rateLimit({ capacity: 5, refillPerSec: 1 / 60, key }), (c) => {
     const id = newId(9);
     store.createSession(id);
     return c.json({ id }, 201);
@@ -41,26 +74,31 @@ export function createApp(store: EventStore, ctx: ServerContext = defaultContext
     return c.json<EventsResponse>({ events: store.eventsAfter(id, after), latestSeq });
   });
 
-  app.post("/sessions/:id/actions", bodyLimit({ maxSize: 4 * 1024 }), async (c) => {
-    const id = c.req.param("id");
-    if (!SESSION_ID_RE.test(id) || !store.sessionExists(id))
-      return c.json<PostActionResponse>({ ok: false, error: "no such session" }, 404);
+  app.post(
+    "/sessions/:id/actions",
+    rateLimit({ capacity: 20, refillPerSec: 5, key }),
+    bodyLimit({ maxSize: 4 * 1024 }),
+    async (c) => {
+      const id = c.req.param("id");
+      if (!SESSION_ID_RE.test(id) || !store.sessionExists(id))
+        return c.json<PostActionResponse>({ ok: false, error: "no such session" }, 404);
 
-    let body: PostActionRequest;
-    try {
-      body = await c.req.json<PostActionRequest>();
-    } catch {
-      return c.json<PostActionResponse>({ ok: false, error: "invalid JSON" }, 400);
-    }
+      let body: PostActionRequest;
+      try {
+        body = await c.req.json<PostActionRequest>();
+      } catch {
+        return c.json<PostActionResponse>({ ok: false, error: "invalid JSON" }, 400);
+      }
 
-    const actor = body?.actor;
-    if (typeof actor !== "string" || actor.length < 1 || actor.length > 64)
-      return c.json<PostActionResponse>({ ok: false, error: "actor must be 1-64 characters" }, 400);
+      const actor = body?.actor;
+      if (typeof actor !== "string" || actor.length < 1 || actor.length > 64)
+        return c.json<PostActionResponse>({ ok: false, error: "actor must be 1-64 characters" }, 400);
 
-    const result = store.append(id, actor, body.action, ctx);
-    if (!result.ok) return c.json<PostActionResponse>({ ok: false, error: result.error }, 400);
-    return c.json<PostActionResponse>(result);
-  });
+      const result = store.append(id, actor, body.action, ctx);
+      if (!result.ok) return c.json<PostActionResponse>({ ok: false, error: result.error }, 400);
+      return c.json<PostActionResponse>(result);
+    },
+  );
 
   return app;
 }

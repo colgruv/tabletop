@@ -9,7 +9,7 @@ let nextId = 0;
 
 beforeEach(() => {
   store = new EventStore(":memory:");
-  app = createApp(store, { newId: () => `tok${++nextId}`, rollDie: () => 4 });
+  app = createApp(store, { ctx: { newId: () => `tok${++nextId}`, rollDie: () => 4 } });
 });
 afterEach(() => store.close());
 
@@ -80,5 +80,46 @@ describe("event log API", () => {
       body: JSON.stringify({ action: { type: "dice.roll", formula: "1d6" } }),
     });
     expect(noActor.status).toBe(400);
+  });
+});
+
+describe("CORS", () => {
+  it("allows the configured origin and exposes ETag", async () => {
+    const corsApp = createApp(new EventStore(":memory:"), { allowedOrigins: ["https://example.github.io"] });
+    const pre = await corsApp.request("/api/sessions/abcdefgh/events", {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://example.github.io",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "if-none-match",
+      },
+    });
+    expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("https://example.github.io");
+    expect(pre.headers.get("Access-Control-Allow-Headers")?.toLowerCase()).toContain("if-none-match");
+
+    const res = await corsApp.request("/api/health", { headers: { Origin: "https://example.github.io" } });
+    expect(res.headers.get("Access-Control-Expose-Headers")).toContain("ETag");
+  });
+
+  it("does not allow other origins", async () => {
+    const corsApp = createApp(new EventStore(":memory:"), { allowedOrigins: ["https://example.github.io"] });
+    const res = await corsApp.request("/api/health", { headers: { Origin: "https://evil.example" } });
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+  });
+});
+
+describe("rate limiting", () => {
+  it("limits session creation per IP", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      const res = await app.request("/api/sessions", { method: "POST", headers: { "X-Forwarded-For": "1.1.1.1, 9.9.9.9" } });
+      statuses.push(res.status);
+    }
+    expect(statuses.slice(0, 5).every((s) => s === 201)).toBe(true);
+    expect(statuses.at(-1)).toBe(429);
+
+    // A different viewer IP (last X-Forwarded-For entry) has its own bucket.
+    const other = await app.request("/api/sessions", { method: "POST", headers: { "X-Forwarded-For": "1.1.1.1, 8.8.8.8" } });
+    expect(other.status).toBe(201);
   });
 });

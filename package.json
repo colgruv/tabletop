@@ -5,13 +5,14 @@
   "workspaces": [
     "shared",
     "server",
-    "client"
+    "client",
+    "infra"
   ],
   "scripts": {
     "dev": "concurrently -n server,client -c blue,green \"npm:dev -w server\" \"npm:dev -w client\"",
     "build": "npm run build -w client",
     "test": "vitest run",
-    "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit"
+    "typecheck": "tsc -p shared --noEmit && tsc -p server --noEmit && tsc -p client --noEmit && tsc -p infra --noEmit"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

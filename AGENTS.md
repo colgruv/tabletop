@@ -138,11 +138,21 @@ Summary: **polling scales more simply; SSE scales more efficiently.** At hundred
 - `npm test` · `npm run typecheck` · `npm run build`
 - `?webgl` in the URL forces the WebGL2 fallback.
 
+### Test deployment (AWS, `infra/`)
+For playtesting only, not the production decision. Defined in CDK (`infra/lib/tabletop-stack.ts`), us-east-1:
+- **Client:** GitHub Pages, built by `.github/workflows/pages.yml` on every push to `main`. `client/.env.production` holds `VITE_API_URL`.
+- **Server:** one `t4g.micro` EC2 instance (Amazon Linux 2023, Node from nodejs.org) running `server/` under systemd, with SQLite at `/var/lib/tabletop/tabletop.db`. Elastic IP; no SSH (use SSM Session Manager). Its security group allows **only CloudFront's origin-facing IPs**.
+- **HTTPS:** a CloudFront distribution in front of the instance, with caching disabled so the server's own ETag/304 handling still applies.
+- **Safety nets:** a $15/month account-wide budget alert, and daily disk snapshots kept for 7 days.
+- **Deploy server code:** push to `main`, then `npm run update-server -w @tabletop/infra` (runs `tabletop-update` over SSM). **Deploy infra:** `npm run deploy -w @tabletop/infra` with `TABLETOP_ALERT_EMAIL` set.
+- The AMI is pinned in `infra/cdk.context.json` (gitignored). A different AMI **replaces the instance and loses the event log**, short of restoring a snapshot.
+- Cost note for the hosting decision: polling is billed per request on API Gateway/Lambda, so ~750 req/s (≈2B requests/month) would cost on the order of $2k/month there, versus a few dollars for an always-on instance.
+
 ---
 
 ## 6. Open questions (NOT yet decided)
 
-- Hosting (serverless, containers, etc.), the production datastore (likely Postgres), and the latest-seq cache (likely Redis).
+- Production hosting (the test setup above is a single instance), the production datastore (likely Postgres), and the latest-seq cache (likely Redis).
 - Whether to take periodic **snapshots** so long sessions don't require full replay, and how to migrate events when `v` changes.
 - Authentication, session/room creation, and roles (GM vs. player permissions, hidden information). Today anyone with the link can do anything, and `actor` is self-reported.
 - Asset pipeline: where models and textures are stored and how they're served (CDN), and whether players can upload their own.

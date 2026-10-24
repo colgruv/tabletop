@@ -24,3 +24,17 @@ npm test          # Vitest
 npm run typecheck # tsc for all packages
 npm run build     # production client build into client/dist
 ```
+
+## Test deployment
+
+The client is on GitHub Pages; the API runs on a small AWS instance behind CloudFront. Details are in [AGENTS.md](AGENTS.md#test-deployment-aws-infra).
+
+```sh
+# Infrastructure (us-east-1). Budget alerts go to this address.
+TABLETOP_ALERT_EMAIL=you@example.com npm run deploy -w @tabletop/infra
+
+# Ship new server code after pushing to main
+npm run update-server -w @tabletop/infra
+```
+
+Client changes deploy automatically when pushed to `main`.

@@ -1,17 +1,20 @@
 import type { Action, EventsResponse, PostActionResponse, TableEvent } from "@tabletop/shared";
 
+/** API origin. Empty in dev (Vite proxies /api); set VITE_API_URL for hosted builds. */
+const API = (import.meta.env.VITE_API_URL ?? "").replace(/\/$/, "");
+
 export type EventsResult =
   | { changed: false }
   | { changed: true; events: TableEvent[]; latestSeq: number; etag: string | null };
 
 export async function createSession(): Promise<string> {
-  const res = await fetch("/api/sessions", { method: "POST" });
+  const res = await fetch(`${API}/api/sessions`, { method: "POST" });
   if (!res.ok) throw new Error(`create session failed: ${res.status}`);
   return ((await res.json()) as { id: string }).id;
 }
 
 export async function fetchEvents(session: string, after: number, etag: string | null): Promise<EventsResult> {
-  const res = await fetch(`/api/sessions/${encodeURIComponent(session)}/events?after=${after}`, {
+  const res = await fetch(`${API}/api/sessions/${encodeURIComponent(session)}/events?after=${after}`, {
     // We manage the ETag ourselves, so keep the browser cache out of it.
     cache: "no-store",
     headers: etag ? { "If-None-Match": etag } : {},
@@ -24,7 +27,7 @@ export async function fetchEvents(session: string, after: number, etag: string |
 
 export async function postAction(session: string, actor: string, action: Action): Promise<PostActionResponse> {
   try {
-    const res = await fetch(`/api/sessions/${encodeURIComponent(session)}/actions`, {
+    const res = await fetch(`${API}/api/sessions/${encodeURIComponent(session)}/actions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ actor, action }),

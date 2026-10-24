@@ -1,0 +1,8 @@
+{
+  "app": "npx tsx bin/app.ts",
+  "context": {
+    "repoUrl": "https://github.com/colgruv/tabletop.git",
+    "allowedOrigin": "https://colgruv.github.io",
+    "monthlyBudgetUsd": 15
+  }
+}
