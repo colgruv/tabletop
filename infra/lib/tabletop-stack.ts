@@ -19,6 +19,8 @@ export interface TabletopStackProps extends cdk.StackProps {
 }
 
 const PORT = 8787;
+/** Amazon Linux 2023, arm64, as deployed on 2026-10-24. */
+const SERVER_AMI = "ami-08eb58865930c986c";
 
 /**
  * Test-scale backend: one small EC2 instance running server/ with SQLite on
@@ -52,12 +54,9 @@ export class TabletopStack extends cdk.Stack {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       instanceType: new ec2.InstanceType("t4g.micro"),
-      // Pinned in cdk.context.json on first synth, so a new AMI never silently replaces
-      // the instance (which would lose the SQLite file). Refresh deliberately.
-      machineImage: ec2.MachineImage.latestAmazonLinux2023({
-        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
-        cachedInContext: true,
-      }),
+      // Pinned so a new AMI never silently replaces the instance (which would lose
+      // the SQLite file). Changing this replaces the server: restore from a snapshot.
+      machineImage: ec2.MachineImage.genericLinux({ "us-east-1": SERVER_AMI }),
       securityGroup: sg,
       role,
       requireImdsv2: true,

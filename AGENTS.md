@@ -145,7 +145,7 @@ For playtesting only, not the production decision. Defined in CDK (`infra/lib/ta
 - **HTTPS:** a CloudFront distribution in front of the instance, with caching disabled so the server's own ETag/304 handling still applies.
 - **Safety nets:** a $15/month account-wide budget alert, and daily disk snapshots kept for 7 days.
 - **Deploy server code:** push to `main`, then `npm run update-server -w @tabletop/infra` (runs `tabletop-update` over SSM). **Deploy infra:** `npm run deploy -w @tabletop/infra` with `TABLETOP_ALERT_EMAIL` set.
-- The AMI is pinned in `infra/cdk.context.json` (gitignored). A different AMI **replaces the instance and loses the event log**, short of restoring a snapshot.
+- The AMI is pinned in code (`SERVER_AMI` in `infra/lib/tabletop-stack.ts`), so deploys from any machine match. Changing it **replaces the instance and loses the event log**, unless you restore a snapshot. Run `cdk diff` before every deploy and look for "replace" on the instance. (`cdk.context.json` is gitignored because it contains account and VPC IDs. Its other lookups resolve the same way on any machine.)
 - Cost note for the hosting decision: polling is billed per request on API Gateway/Lambda, so ~750 req/s (≈2B requests/month) would cost on the order of $2k/month there, versus a few dollars for an always-on instance.
 
 ---

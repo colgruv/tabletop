@@ -29,8 +29,11 @@ npm run build     # production client build into client/dist
 
 The client is on GitHub Pages; the API runs on a small AWS instance behind CloudFront. Details are in [AGENTS.md](AGENTS.md#test-deployment-aws-infra).
 
+On a new machine: install Node 24+ and the AWS CLI, run `npm install`, then `aws login`. Nothing else is stored locally.
+
 ```sh
 # Infrastructure (us-east-1). Budget alerts go to this address.
+# Always check `npx cdk diff` (in infra/) first: replacing the instance loses its data.
 TABLETOP_ALERT_EMAIL=you@example.com npm run deploy -w @tabletop/infra
 
 # Ship new server code after pushing to main
