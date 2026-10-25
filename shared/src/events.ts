@@ -28,7 +28,7 @@ export type TableEvent = EventData & {
   seq: number;
   /** Schema version of this event. */
   v: number;
-  /** Client id of whoever caused it. */
+  /** Id of the user who caused it, set by the server from their token. */
   actor: string;
   /** Server time in ms since epoch. */
   at: number;
@@ -36,12 +36,17 @@ export type TableEvent = EventData & {
 
 // ---- HTTP payloads ----
 
+/** The caller is identified by the bearer token, so there is no actor field. */
 export interface PostActionRequest {
-  actor: string;
   action: Action;
 }
 
 export type PostActionResponse = { ok: true; seq: number } | { ok: false; error: string };
+
+export interface GuestResponse {
+  userId: string;
+  token: string;
+}
 
 export interface EventsResponse {
   events: TableEvent[];

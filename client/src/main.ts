@@ -1,22 +1,9 @@
 import { emptyState, replay, type Action, type TableState } from "@tabletop/shared";
-import { createSession, postAction } from "./transport/api";
+import { createSession, ensureAccount, postAction } from "./transport/api";
 import { Poller } from "./transport/poller";
 import { TableScene } from "./render/scene";
 import { Overlay } from "./ui/overlay";
 import "./style.css";
-
-/** Stable per-browser id. Falls back to a per-tab id if storage is blocked. */
-function getActorId(): string {
-  const fresh = crypto.randomUUID();
-  try {
-    const saved = localStorage.getItem("tabletop.actor");
-    if (saved) return saved;
-    localStorage.setItem("tabletop.actor", fresh);
-  } catch {
-    /* private mode etc. */
-  }
-  return fresh;
-}
 
 /** Session id lives in the URL hash, so the URL is the invite link. */
 async function getSessionId(): Promise<string> {
@@ -28,14 +15,14 @@ async function getSessionId(): Promise<string> {
 }
 
 async function main() {
-  const actor = getActorId();
+  const { userId: actor } = await ensureAccount();
   const session = await getSessionId();
   let state: TableState = emptyState();
   let poller: Poller;
 
   // Send an action. Local state is NOT changed here: we wait for the event to come back from the log.
   async function send(action: Action) {
-    const res = await postAction(session, actor, action);
+    const res = await postAction(session, action);
     poller.nudge();
     return res;
   }

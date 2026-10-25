@@ -129,7 +129,7 @@ Summary: **polling scales more simply; SSE scales more efficiently.** At hundred
 - **Actions vs. events:** clients send an `Action` (an intent). The server validates it with `validateAction`, which returns an `EventData` (a fact), then adds `seq`, `v` (schema version), `actor`, and `at`. Anything the server must decide (ids, dice results) is created during validation, through the injected `ServerContext`.
 - **Adding a new kind of change:** add an `Action` variant and an `EventData` variant in `shared/src/events.ts`, handle it in `validateAction` and `applyEvent`, and add tests. `applyEvent` must stay pure and deterministic.
 - **Drag preview:** while a drag is in flight, the renderer shows the token at its *pending* position, but table state only changes when the event comes back from the log.
-- **API:** `POST /api/sessions` → `{id}`; `POST /api/sessions/:id/actions` `{actor, action}` → `{ok, seq}` or `{ok: false, error}`; `GET /api/sessions/:id/events?after=N` → `{events, latestSeq}`, with `ETag` = latest seq (sends 304 when unchanged).
+- **API:** `POST /api/sessions` → `{id}`; `POST /api/auth/guest` → `{userId, token}`; `POST /api/sessions/:id/actions` `{action}` with `Authorization: Bearer <token>` → `{ok, seq}` or `{ok: false, error}` (the event's `actor` is the token's user id); `GET /api/sessions/:id/events?after=N` → `{events, latestSeq}`, with `ETag` = latest seq (sends 304 when unchanged).
 - **Single-instance caches:** the server's in-memory latest-seq and state caches are correct only while one instance runs. They stand in for Redis.
 - **Starting poll values** are in `client/src/transport/poller.ts` (`POLL`): 1 s after activity, backing off ×1.5 to 5 s, and 30 s when the tab is hidden. Tune these against real metrics.
 
@@ -150,11 +150,31 @@ For playtesting only, not the production decision. Defined in CDK (`infra/lib/ta
 
 ---
 
-## 6. Open questions (NOT yet decided)
+## 6. Decision: Accounts, auth, and game membership
+
+**Chosen:** guest-first accounts with bearer tokens, claimable with Discord or Google OAuth. Games belong to claimed accounts. Players join by invite link and can rejoin later without one.
+
+> Status: **step 1 of the rollout below is done** (guest accounts, bearer tokens, server-set `actor`, `server/src/migrations.ts`). Steps 2 onward are decided but not yet implemented. Until step 2, the events route is still open to anyone with the session id.
+
+- **Guest accounts:** on first visit the server creates a user and returns an opaque token. The client keeps it in `localStorage` and sends `Authorization: Bearer <token>`. Tokens are random and stored **hashed** (not JWTs), so they can be revoked.
+- **Bearer tokens, not cookies:** the client (GitHub Pages) and API (CloudFront) are on different origins, so cookies would be third-party and blocked by Safari and others. Bearer tokens also remove CSRF concerns.
+- **Claiming:** a user attaches a **Discord or Google** login to their existing user id (same id, so memberships carry over). Both providers are supported. OAuth sign-in on a new browser resolves to the claimed user.
+- **Creating a game requires a claimed account**, so a game is never bound to a browser-cached guest. Players may stay guests.
+- **Membership:** `memberships(session_id, user_id, role)` with role `gm` or `player`. Events and actions routes require membership. A session id alone no longer grants access.
+- **Invites:** the GM creates a link such as `<client>/#/join/<code>`. The code is in the URL fragment, so it never reaches server logs or referrers. Invites **expire after 7 days, have unlimited uses, and can be revoked** by the GM. Accepting is idempotent. Members rejoin from `GET /api/me/games` with no invite.
+- **`actor` is server-set** from the authenticated user id. The client's self-reported `actor` is ignored. Display names live on the user or membership, not in events.
+- **Roles:** `validateAction` receives the caller's role. At first all members can do everything. GM-only actions and token ownership come later.
+- **Saving state** needs nothing new: the event log is already persistent. A game just needs an owner, a name, and a listing.
+- **Rollout:** (1) guest accounts, bearer tokens, server-set `actor`, and a schema migration mechanism (`PRAGMA user_version`); (2) game ownership, memberships, "my games", invites and join; (3) OAuth claiming; (4) roles and permissions; (5) hardening and Postgres.
+- **Legacy test sessions** have no owner and stay open until deleted.
+
+---
+
+## 7. Open questions (NOT yet decided)
 
 - Production hosting (the test setup above is a single instance), the production datastore (likely Postgres), and the latest-seq cache (likely Redis).
 - Whether to take periodic **snapshots** so long sessions don't require full replay, and how to migrate events when `v` changes.
-- Authentication, session/room creation, and roles (GM vs. player permissions, hidden information). Today anyone with the link can do anything, and `actor` is self-reported.
+- Fine-grained roles: which actions are GM-only, token ownership, and hidden information (see section 6 for the account model).
 - Asset pipeline: where models and textures are stored and how they're served (CDN), and whether players can upload their own.
 - Bundle size: `three/webgpu` is about 220 KB gzipped. Consider code-splitting, or a WebGL-only build for low-end devices.
 - Rule system support: system-agnostic vs. specific game systems.

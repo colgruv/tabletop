@@ -10,6 +10,7 @@ import {
   type TableEvent,
   type TableState,
 } from "@tabletop/shared";
+import { migrate } from "./migrations";
 
 const MAX_CACHED_STATES = 1000;
 
@@ -30,17 +31,14 @@ export class EventStore {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
-      CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        created_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS events (
-        session_id TEXT NOT NULL,
-        seq INTEGER NOT NULL,
-        data TEXT NOT NULL,
-        PRIMARY KEY (session_id, seq)
-      ) WITHOUT ROWID;
+      PRAGMA foreign_keys = ON;
     `);
+    migrate(this.db);
+  }
+
+  /** Shared handle so other stores (accounts) live in the same database. */
+  get database(): DatabaseSync {
+    return this.db;
   }
 
   createSession(id: string): void {

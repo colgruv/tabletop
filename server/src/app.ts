@@ -2,14 +2,24 @@ import { randomBytes, randomInt } from "node:crypto";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
+import { createMiddleware } from "hono/factory";
 import type { Context } from "hono";
-import type { EventsResponse, PostActionRequest, PostActionResponse, ServerContext } from "@tabletop/shared";
+import type {
+  EventsResponse,
+  GuestResponse,
+  PostActionRequest,
+  PostActionResponse,
+  ServerContext,
+} from "@tabletop/shared";
+import { AccountStore } from "./accounts";
 import { rateLimit } from "./rateLimit";
 import type { EventStore } from "./store";
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{8,32}$/;
 
 const newId = (bytes: number) => randomBytes(bytes).toString("base64url");
+
+type Env = { Variables: { userId: string } };
 
 export const defaultContext: ServerContext = {
   newId: () => newId(6),
@@ -31,7 +41,18 @@ export const forwardedIp = (c: Context): string =>
 export function createApp(store: EventStore, opts: AppOptions = {}) {
   const ctx = opts.ctx ?? defaultContext;
   const key = opts.clientIp ?? forwardedIp;
-  const app = new Hono().basePath("/api");
+  const accounts = new AccountStore(store.database);
+  const app = new Hono<Env>().basePath("/api");
+
+  /** Resolve the bearer token to a user id, or reject with 401. */
+  const requireAuth = createMiddleware<Env>(async (c, next) => {
+    const header = c.req.header("Authorization") ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+    const userId = token ? accounts.userForToken(token) : null;
+    if (!userId) return c.json({ ok: false, error: "unauthorized" }, 401);
+    c.set("userId", userId);
+    await next();
+  });
 
   if (opts.allowedOrigins?.length) {
     app.use(
@@ -39,7 +60,7 @@ export function createApp(store: EventStore, opts: AppOptions = {}) {
       cors({
         origin: opts.allowedOrigins,
         allowMethods: ["GET", "POST"],
-        allowHeaders: ["Content-Type", "If-None-Match"],
+        allowHeaders: ["Content-Type", "If-None-Match", "Authorization"],
         exposeHeaders: ["ETag"],
         maxAge: 7200, // cache preflights so polls don't double up
       }),
@@ -50,6 +71,12 @@ export function createApp(store: EventStore, opts: AppOptions = {}) {
   app.use("*", rateLimit({ capacity: 30, refillPerSec: 15, key }));
 
   app.get("/health", (c) => c.json({ ok: true }));
+
+  // Guest accounts are cheap to create but each is a database row, so limit per IP.
+  // Generous burst because a whole table of players may share one network.
+  app.post("/auth/guest", rateLimit({ capacity: 20, refillPerSec: 1 / 30, key }), (c) =>
+    c.json<GuestResponse>(accounts.createGuest(), 201),
+  );
 
   app.post("/sessions", rateLimit({ capacity: 5, refillPerSec: 1 / 60, key }), (c) => {
     const id = newId(9);
@@ -76,6 +103,7 @@ export function createApp(store: EventStore, opts: AppOptions = {}) {
 
   app.post(
     "/sessions/:id/actions",
+    requireAuth,
     rateLimit({ capacity: 20, refillPerSec: 5, key }),
     bodyLimit({ maxSize: 4 * 1024 }),
     async (c) => {
@@ -90,11 +118,7 @@ export function createApp(store: EventStore, opts: AppOptions = {}) {
         return c.json<PostActionResponse>({ ok: false, error: "invalid JSON" }, 400);
       }
 
-      const actor = body?.actor;
-      if (typeof actor !== "string" || actor.length < 1 || actor.length > 64)
-        return c.json<PostActionResponse>({ ok: false, error: "actor must be 1-64 characters" }, 400);
-
-      const result = store.append(id, actor, body.action, ctx);
+      const result = store.append(id, c.get("userId"), body.action, ctx);
       if (!result.ok) return c.json<PostActionResponse>({ ok: false, error: result.error }, 400);
       return c.json<PostActionResponse>(result);
     },
