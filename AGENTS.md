@@ -170,6 +170,18 @@ For playtesting only, not the production decision. Defined in CDK (`infra/lib/ta
 - **Rollout:** (1) guest accounts, bearer tokens, server-set `actor`, and a schema migration mechanism (`PRAGMA user_version`); (2) game ownership, memberships, "my games", invites and join; (3) OAuth claiming; (4) roles and permissions; (5) hardening and Postgres.
 - **Legacy test sessions** have no owner and stay open until deleted.
 
+### Pending (as of 2026-10-30)
+
+Discord sign-in is committed (`64d4ad4`) but **not yet deployed**. To finish:
+
+1. **Deploy the infra change** (adds the instance role's read access to `/tabletop/*` in Parameter Store). Run `cdk diff` first: it should show only the IAM policy and **no replacement** of the instance. Then `TABLETOP_ALERT_EMAIL=<budget alert email> npm run deploy -w @tabletop/infra`. The email is deliberately not in this public repo; the existing value is on the `tabletop-monthly` budget (`aws budgets describe-subscribers-for-notification`). Without the policy the server still runs, with sign-in off.
+2. **Update the server:** `npm run update-server -w @tabletop/infra`. The migration to schema version 3 runs on start. Then try "Sign in with Discord" at the hosted client, from two browsers, to check that the second one signs in as the same user.
+3. **Check the Discord redirect URLs** in the developer portal: `<public-api-url>/api/auth/oauth/discord/callback` for production and `http://localhost:5173/api/auth/oauth/discord/callback` for dev. Discord rejects any mismatch.
+4. **Rotate the Discord client secret** (it was shared in a chat transcript): reset it in the portal, then `aws ssm put-parameter --region us-east-1 --type SecureString --overwrite --name /tabletop/discord-client-secret --value <new>` and restart the service (`update-server` does this).
+5. **Set up a new machine:** `npm ci`; install the AWS CLI and run `aws login` as the `tabletop-admin` IAM user, not root. On Windows, `aws` may not be on PATH in an already-open terminal.
+6. **Add Google sign-in** once a Google OAuth client exists (consent screen with `openid` and `profile` scopes, redirect URLs as above with `google` in place of `discord`). Store `google-client-id` and `google-client-secret` under `/tabletop/`, then add a `googleProvider` in `oauth.ts` and a line in `config.ts`.
+7. **Then rollout step 2:** game ownership, memberships, "my games", invites and join, including the merge of a guest into an already-claimed account.
+
 ---
 
 ## 7. Open questions (NOT yet decided)
