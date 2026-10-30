@@ -1,4 +1,4 @@
-import type { Action, TableState } from "@tabletop/shared";
+import type { Action, MeResponse, TableState } from "@tabletop/shared";
 import type { PollStatus } from "../transport/poller";
 
 export interface OverlayCallbacks {
@@ -58,6 +58,25 @@ export class Overlay {
     });
   }
 
+  /** Show who is signed in, or a sign-in button per configured provider while still a guest. */
+  setAccount(me: MeResponse, signIn: (provider: string) => void): void {
+    const el = $("#account");
+    el.replaceChildren();
+    const linked = me.credentials[0];
+    if (linked) {
+      el.textContent = `Signed in as ${linked.displayName}`;
+      return;
+    }
+    el.textContent = "Guest";
+    for (const provider of me.providers) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = `Sign in with ${provider[0]!.toUpperCase()}${provider.slice(1)}`;
+      btn.addEventListener("click", () => signIn(provider));
+      el.append(" ", btn);
+    }
+  }
+
   setBackend(name: string): void {
     $("#backend").textContent = name;
   }
@@ -102,14 +121,19 @@ export class Overlay {
     if (token) $("#selected-name").textContent = token.name;
   }
 
+  /** Show a message for a few seconds. */
+  showError(message: string | null): void {
+    const el = $("#error");
+    clearTimeout(this.errorTimer);
+    el.textContent = message ?? "";
+    el.hidden = !message;
+    if (message) this.errorTimer = setTimeout(() => (el.hidden = true), 4000);
+  }
+
   /** Send an action; show the server's error if it was rejected. */
   private async run(action: Action): Promise<boolean> {
     const error = await this.cb.send(action);
-    const el = $("#error");
-    clearTimeout(this.errorTimer);
-    el.textContent = error ?? "";
-    el.hidden = !error;
-    if (error) this.errorTimer = setTimeout(() => (el.hidden = true), 4000);
+    this.showError(error);
     return !error;
   }
 }

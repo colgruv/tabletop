@@ -7,15 +7,18 @@ import type { Context } from "hono";
 import type {
   EventsResponse,
   GuestResponse,
+  MeResponse,
   PostActionRequest,
   PostActionResponse,
   ServerContext,
 } from "@tabletop/shared";
 import { AccountStore } from "./accounts";
+import type { OAuthSettings } from "./oauth";
 import { rateLimit } from "./rateLimit";
 import type { EventStore } from "./store";
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{8,32}$/;
+const RETURN_TO_RE = /^[A-Za-z0-9_-]{0,32}$/;
 
 const newId = (bytes: number) => randomBytes(bytes).toString("base64url");
 
@@ -28,6 +31,8 @@ export const defaultContext: ServerContext = {
 
 export interface AppOptions {
   ctx?: ServerContext;
+  /** Sign-in providers. Omit to leave guest-only. */
+  oauth?: OAuthSettings;
   /** Browser origins allowed to call the API cross-origin (e.g. the GitHub Pages site). */
   allowedOrigins?: string[];
   /** Identify the caller for rate limiting. */
@@ -77,6 +82,58 @@ export function createApp(store: EventStore, opts: AppOptions = {}) {
   app.post("/auth/guest", rateLimit({ capacity: 20, refillPerSec: 1 / 30, key }), (c) =>
     c.json<GuestResponse>(accounts.createGuest(), 201),
   );
+
+  const oauth = opts.oauth;
+
+  app.get("/me", requireAuth, (c) => {
+    const userId = c.get("userId");
+    return c.json<MeResponse>({ userId, ...accounts.profile(userId), providers: Object.keys(oauth?.providers ?? {}) });
+  });
+
+  // Returns the provider's sign-in URL. The browser navigates there; the provider
+  // then sends it back to the callback below. The state ties the two to this user.
+  app.post("/auth/oauth/:provider/start", requireAuth, rateLimit({ capacity: 10, refillPerSec: 1 / 6, key }), async (c) => {
+    const provider = oauth?.providers[c.req.param("provider")];
+    if (!oauth || !provider) return c.json({ error: "unknown provider" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as { returnTo?: unknown };
+    const returnTo = typeof body.returnTo === "string" && RETURN_TO_RE.test(body.returnTo) ? body.returnTo : "";
+    const state = accounts.createOAuthState(c.req.param("provider"), c.get("userId"), returnTo);
+    const redirectUri = `${oauth.publicApiUrl}/api/auth/oauth/${c.req.param("provider")}/callback`;
+    return c.json({ url: provider.authorizeUrl({ state, redirectUri }) });
+  });
+
+  // The provider sends the browser here. Whatever happens, finish by sending it
+  // back to the client page; the outcome rides in the URL fragment.
+  app.get("/auth/oauth/:provider/callback", async (c) => {
+    const id = c.req.param("provider");
+    const provider = oauth?.providers[id];
+    if (!oauth || !provider) return c.json({ error: "unknown provider" }, 404);
+    const back = (fragment: string) => c.redirect(`${oauth.clientUrl}#${fragment}`);
+
+    const state = accounts.consumeOAuthState(c.req.query("state") ?? "", id);
+    if (!state) return back("login-error=state");
+    const code = c.req.query("code");
+    if (!code) return back("login-error=denied");
+
+    let identity;
+    try {
+      identity = await provider.exchange(code, `${oauth.publicApiUrl}/api/auth/oauth/${id}/callback`);
+    } catch (err) {
+      console.warn(`${id} sign-in failed: ${err instanceof Error ? err.message : err}`);
+      return back("login-error=provider");
+    }
+    const userId = accounts.resolveLogin(id, identity.subject, identity.displayName, state.userId);
+    const loginCode = accounts.createLoginCode(userId);
+    return back(`login=${loginCode}${state.returnTo ? `&return=${state.returnTo}` : ""}`);
+  });
+
+  // The client trades the one-time code from the redirect for a bearer token.
+  app.post("/auth/login-code", rateLimit({ capacity: 10, refillPerSec: 1 / 6, key }), async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { code?: unknown };
+    const userId = typeof body.code === "string" ? accounts.consumeLoginCode(body.code) : null;
+    if (!userId) return c.json({ error: "invalid or expired code" }, 400);
+    return c.json<GuestResponse>({ userId, token: accounts.createToken(userId) });
+  });
 
   app.post("/sessions", rateLimit({ capacity: 5, refillPerSec: 1 / 60, key }), (c) => {
     const id = newId(9);

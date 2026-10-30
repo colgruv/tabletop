@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import type { Action, EventsResponse, GuestResponse, PostActionResponse } from "@tabletop/shared";
 import { createApp } from "./app";
+import { loadOAuthSettings } from "./config";
+import { discordProvider } from "./oauth";
 import { EventStore } from "./store";
 
 let store: EventStore;
@@ -154,7 +156,7 @@ describe("migrations", () => {
       const upgraded = new EventStore(path);
       expect(upgraded.sessionExists("oldsession")).toBe(true);
       expect(upgraded.latestSeq("oldsession")).toBe(1);
-      expect(upgraded.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+      expect(upgraded.database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
       upgraded.close();
 
       // Reopening is a no-op.
@@ -212,5 +214,182 @@ describe("rate limiting", () => {
     for (let i = 0; i < 25; i++) statuses.push((await app.request("/api/auth/guest", { method: "POST", headers })).status);
     expect(statuses.slice(0, 20).every((s) => s === 201)).toBe(true);
     expect(statuses.at(-1)).toBe(429);
+  });
+});
+
+describe("OAuth sign-in", () => {
+  const CLIENT = "https://client.example/tabletop/";
+  let identity = { subject: "d-1", displayName: "Dana" };
+  let failExchange = false;
+  let oauthApp: ReturnType<typeof createApp>;
+
+  const auth = (g: GuestResponse) => ({ Authorization: `Bearer ${g.token}`, "Content-Type": "application/json" });
+
+  beforeEach(() => {
+    identity = { subject: "d-1", displayName: "Dana" };
+    failExchange = false;
+    oauthApp = createApp(store, {
+      oauth: {
+        publicApiUrl: "https://api.example",
+        clientUrl: CLIENT,
+        providers: {
+          fake: {
+            authorizeUrl: ({ state, redirectUri }) => `https://idp.example/auth?state=${state}&ru=${encodeURIComponent(redirectUri)}`,
+            exchange: async () => {
+              if (failExchange) throw new Error("boom");
+              return identity;
+            },
+          },
+        },
+      },
+    });
+  });
+
+  async function start(g: GuestResponse, returnTo = "") {
+    const res = await oauthApp.request("/api/auth/oauth/fake/start", {
+      method: "POST",
+      headers: auth(g),
+      body: JSON.stringify({ returnTo }),
+    });
+    expect(res.status).toBe(200);
+    const url = new URL(((await res.json()) as { url: string }).url);
+    return { state: url.searchParams.get("state")!, redirectUri: url.searchParams.get("ru")! };
+  }
+
+  async function callback(state: string, code: string | null = "abc") {
+    const q = new URLSearchParams({ state, ...(code ? { code } : {}) });
+    const res = await oauthApp.request(`/api/auth/oauth/fake/callback?${q}`);
+    expect(res.status).toBe(302);
+    const loc = new URL(res.headers.get("Location")!);
+    expect(`${loc.origin}${loc.pathname}`).toBe(CLIENT);
+    return new URLSearchParams(loc.hash.slice(1));
+  }
+
+  const exchange = (code: string) =>
+    oauthApp.request("/api/auth/login-code", { method: "POST", body: JSON.stringify({ code }) });
+
+  it("claims a guest and sends the browser back with a one-time code", async () => {
+    const { state, redirectUri } = await start(alice, "sess1234");
+    expect(redirectUri).toBe("https://api.example/api/auth/oauth/fake/callback");
+
+    const frag = await callback(state);
+    expect(frag.get("return")).toBe("sess1234");
+    const res = await exchange(frag.get("login")!);
+    expect(res.status).toBe(200);
+    const got = (await res.json()) as GuestResponse;
+    expect(got.userId).toBe(alice.userId);
+
+    const me = await oauthApp.request("/api/me", { headers: auth(got) });
+    expect(await me.json()).toEqual({
+      userId: alice.userId,
+      claimed: true,
+      credentials: [{ provider: "fake", displayName: "Dana" }],
+      providers: ["fake"],
+    });
+  });
+
+  it("reports a fresh guest as unclaimed", async () => {
+    const me = await oauthApp.request("/api/me", { headers: auth(alice) });
+    expect(await me.json()).toMatchObject({ claimed: false, credentials: [] });
+  });
+
+  it("signs a second browser in as the already-claimed user", async () => {
+    await exchange((await callback((await start(alice)).state)).get("login")!);
+
+    // A different guest (a new browser) signs in with the same identity.
+    const frag = await callback((await start(bob)).state);
+    const got = (await (await exchange(frag.get("login")!)).json()) as GuestResponse;
+    expect(got.userId).toBe(alice.userId);
+    expect(got.token).not.toBe(alice.token);
+    expect(got.token).not.toBe(bob.token);
+  });
+
+  it("makes login codes and states single-use", async () => {
+    const { state } = await start(alice);
+    const frag = await callback(state);
+    expect((await exchange(frag.get("login")!)).status).toBe(200);
+    expect((await exchange(frag.get("login")!)).status).toBe(400);
+    expect((await callback(state)).get("login-error")).toBe("state");
+  });
+
+  it("reports forged states, denied sign-ins and provider failures", async () => {
+    expect((await callback("forged")).get("login-error")).toBe("state");
+    expect((await callback((await start(alice)).state, null)).get("login-error")).toBe("denied");
+    failExchange = true;
+    expect((await callback((await start(alice)).state)).get("login-error")).toBe("provider");
+  });
+
+  it("requires a token to start, 404s unknown providers, and drops an unsafe returnTo", async () => {
+    const noAuth = await oauthApp.request("/api/auth/oauth/fake/start", { method: "POST" });
+    expect(noAuth.status).toBe(401);
+    const unknown = await oauthApp.request("/api/auth/oauth/nope/start", { method: "POST", headers: auth(alice) });
+    expect(unknown.status).toBe(404);
+
+    const { state } = await start(alice, "x&login=evil");
+    expect((await callback(state)).get("return")).toBeNull();
+  });
+
+  it("is off when no provider is configured", async () => {
+    const res = await app.request("/api/auth/oauth/discord/start", { method: "POST", headers: auth(alice) });
+    expect(res.status).toBe(404);
+    const me = await app.request("/api/me", { headers: auth(alice) });
+    expect(((await me.json()) as { providers: string[] }).providers).toEqual([]);
+  });
+});
+
+describe("Discord provider", () => {
+  it("builds the authorize URL and reads the user id from the profile", async () => {
+    const calls: { url: string; body: string; auth?: string }[] = [];
+    const fakeFetch = (async (url: string, init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string> | undefined;
+      calls.push({ url, body: String(init?.body ?? ""), auth: headers?.Authorization });
+      return url.endsWith("/token")
+        ? Response.json({ access_token: "at" })
+        : Response.json({ id: "42", username: "dana", global_name: "Dana W" });
+    }) as unknown as typeof fetch;
+    const p = discordProvider({ clientId: "cid", clientSecret: "sec", fetch: fakeFetch });
+
+    const url = new URL(p.authorizeUrl({ state: "st", redirectUri: "https://api/cb" }));
+    expect(url.origin + url.pathname).toBe("https://discord.com/oauth2/authorize");
+    expect(Object.fromEntries(url.searchParams)).toMatchObject({
+      client_id: "cid",
+      scope: "identify",
+      state: "st",
+      redirect_uri: "https://api/cb",
+    });
+    expect(url.search).not.toContain("sec");
+
+    expect(await p.exchange("the-code", "https://api/cb")).toEqual({ subject: "42", displayName: "Dana W" });
+    expect(new URLSearchParams(calls[0]!.body).get("code")).toBe("the-code");
+    expect(calls[1]!.auth).toBe("Bearer at");
+  });
+
+  it("throws when Discord rejects the code", async () => {
+    const reject = (async () => new Response("no", { status: 400 })) as unknown as typeof fetch;
+    const p = discordProvider({ clientId: "c", clientSecret: "s", fetch: reject });
+    await expect(p.exchange("bad", "https://api/cb")).rejects.toThrow(/400/);
+  });
+});
+
+describe("OAuth config", () => {
+  it("is off without credentials, reads env in dev, and reads SSM params in production", () => {
+    expect(loadOAuthSettings({}, () => ({}))).toBeUndefined();
+
+    const dev = loadOAuthSettings({ DISCORD_CLIENT_ID: "a", DISCORD_CLIENT_SECRET: "b" }, () => ({}));
+    expect(Object.keys(dev!.providers)).toEqual(["discord"]);
+    expect(dev!.publicApiUrl).toBe("http://localhost:5173");
+
+    const prod = loadOAuthSettings({ NODE_ENV: "production" }, () => ({
+      "discord-client-id": "a",
+      "discord-client-secret": "b",
+      "public-api-url": "https://api.example/",
+      "client-url": "https://client.example/tabletop/#old",
+    }));
+    expect(prod!.publicApiUrl).toBe("https://api.example");
+    expect(prod!.clientUrl).toBe("https://client.example/tabletop/");
+
+    // Production without the URLs configured must not guess.
+    const noUrls = { "discord-client-id": "a", "discord-client-secret": "b" };
+    expect(loadOAuthSettings({ NODE_ENV: "production" }, () => noUrls)).toBeUndefined();
   });
 });

@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import { createApp, forwardedIp } from "./app";
+import { loadOAuthSettings } from "./config";
 import { EventStore } from "./store";
 
 const port = Number(process.env.PORT ?? 8787);
@@ -15,6 +16,7 @@ const trustProxy = process.env.TRUST_PROXY === "1";
 
 const store = new EventStore(dbPath);
 const app = createApp(store, {
+  oauth: loadOAuthSettings(),
   allowedOrigins,
   clientIp: trustProxy ? forwardedIp : (c) => getConnInfo(c).remote.address ?? "unknown",
 });

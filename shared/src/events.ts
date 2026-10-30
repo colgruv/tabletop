@@ -48,6 +48,15 @@ export interface GuestResponse {
   token: string;
 }
 
+export interface MeResponse {
+  userId: string;
+  /** True once a login method (Discord, Google) is attached. */
+  claimed: boolean;
+  credentials: { provider: string; displayName: string }[];
+  /** OAuth providers this server has configured. */
+  providers: string[];
+}
+
 export interface EventsResponse {
   events: TableEvent[];
   latestSeq: number;

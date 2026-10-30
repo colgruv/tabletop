@@ -50,6 +50,19 @@ export class TabletopStack extends cdk.Stack {
       managedPolicies: [iam.ManagedPolicy.fromAwsManagedPolicyName("AmazonSSMManagedInstanceCore")],
     });
 
+    // OAuth settings live in Parameter Store under /tabletop/ (created by hand, since the
+    // secrets must not pass through the repo). The server reads them at startup. Secure
+    // strings use the default aws/ssm key, which needs no separate KMS grant.
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        actions: ["ssm:GetParametersByPath", "ssm:GetParameters", "ssm:GetParameter"],
+        resources: [
+          cdk.Arn.format({ service: "ssm", resource: "parameter", resourceName: "tabletop", arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME }, this),
+          cdk.Arn.format({ service: "ssm", resource: "parameter", resourceName: "tabletop/*", arnFormat: cdk.ArnFormat.SLASH_RESOURCE_NAME }, this),
+        ],
+      }),
+    );
+
     const instance = new ec2.Instance(this, "Server", {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },

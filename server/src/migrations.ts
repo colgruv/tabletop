@@ -33,6 +33,32 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX auth_tokens_user ON auth_tokens (user_id);
   `,
+  // 3: OAuth. A user with at least one credential is "claimed". The state and
+  // login code tables hold one-time secrets (hashed), kept in the database so
+  // any server instance can finish a login another one started.
+  `
+  CREATE TABLE credentials (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    display_name TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (provider, subject)
+  );
+  CREATE INDEX credentials_user ON credentials (user_id);
+  CREATE TABLE oauth_states (
+    state_hash TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    return_to TEXT NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  CREATE TABLE login_codes (
+    code_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    expires_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export function migrate(db: DatabaseSync): void {
